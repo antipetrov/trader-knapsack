@@ -27,7 +27,7 @@ def parse_input_line(line):
 
     try:
         data = dict(
-            raw_line=line,
+            raw_line=line.strip(),
             day=int(parts[0]),
             name=parts[1],
             price_percent=float(parts[2]),
