@@ -1,14 +1,16 @@
-import argparse 
+import argparse
+from collections import deque
 
-LOT_NOMINAL = 1000 # номинал каждой облигации
+
+PAPER_NOMINAL = 1000 # номинал каждой облигации
 LOT_DAYS = 30 # дней до погашения
 LOT_COUPON_DAYLY = 1 # купонный доход в день
-
 
 
 class TraderException(Exception):
     # Все ошибки логики
     pass
+
 
 def parse_input_line(line):
     """
@@ -24,6 +26,7 @@ def parse_input_line(line):
 
     try:
         data = dict(
+            raw_line=line,
             day=int(parts[0]),
             name=parts[1],
             price_percent=float(parts[2]),
@@ -32,15 +35,6 @@ def parse_input_line(line):
     except ValueError as e:
         raise TraderException("Unable to parse '{}'".format(line))
 
-    # стоимость всего лота в деньгах
-    data['lot_price'] = LOT_NOMINAL * \
-                        data['price_percent']/100 * \
-                        data['quantity']
-
-    # выигрышь лота (в дегьшах) = купонный доход + сумма погашения
-    data['lot_win'] = (LOT_NOMINAL +
-                       LOT_DAYS*LOT_COUPON_DAYLY) * \
-                      data['quantity']
 
     return data
 
@@ -51,52 +45,211 @@ def get_data_from_file(filename):
     try:
         with open(filename, 'r') as file:
             line_num = 0
-            days, lot_count, balance = file.readline().split()
+            header_parts = file.readline().split()
 
-            for c in range(0, int(lot_count)):
+            try:
+                days = int(header_parts[0])
+                lot_count = int(header_parts[1])
+                balance = float(header_parts[2])
+            except ValueError as e:
+                print("Error in first line: {}".format(e))
+
+            for line in file:
                 line_num += 1
                 try:
-                    lot_data = parse_input_line(file.readline())
+                    lot_data = parse_input_line(line)
                 except TraderException as e:
                     print("Error in input data, line {}: {}".format(line_num, e))
-
                 lots.append(lot_data)
+
     except Exception as e:
         raise e
 
     return days, lots, balance
 
+
 def get_data_from_input():
     return None,None,None
 
 
-def calculate_optimal_lots(days, lots, balance):
-    total_win = 0
-    lot_purchased = []
-    return total_win, lot_purchased
+class Node(object):
+    """
+    "Узел" дерева рещений задачи (0-1 Рюкзак)
+    Каждый узел содержит
+    - суммарный доход (win)
+    - стоимость (price)
+    - список купленных лотов (items)
+
+    Проходя по списку лотов будем создавать по два узла на каждый лот:
+    - для варианта когда лот куплен
+    - для варианта когда лот не куплен
+
+    Для каждого узла, вычислим
+    """
+
+    count = 0
+
+    def __init__(self, win, price, level, items=[]):
+        self.win = win
+        self.price = price
+        self.level = level
+        self.items = items
+
+        self.count = Node.count
+        Node.count += 1
+
+    def upperbound(self, lots_all, balance):
+        """
+        Проверяем, какой максимальный выигрыш мы можем получить,
+        если начиная с текущего узла будем покупать все оставшиеся лоты,
+        пока деньги не кончатся
+
+        :param lots_all: список всех лотов
+        :param balance: общий баланс
+        :return:
+        """
+
+        if self.price > balance:
+            return 0
+
+        sum_value = self.win
+        sum_price = self.price
+
+        l = self.level+1
+        max_level = len(lots_all)
+
+        while l < max_level and sum_price + lots_all[l].price <= balance:
+
+            sum_value += lots_all[l].win
+            sum_price += lots_all[l].price
+            l += 1
+
+        # Делаем вид что последний лот можно поделить (branch and bound)
+        # чтобы получить верхнюю оценку
+        if l < max_level:
+            sum_value += (balance - sum_price) * \
+                         lots_all[l].win / lots_all[l].price
+
+        return sum_value
+
+    def __repr__(self):
+        return "<Node{} level{} items:[{}]>".format(self.count, self.level, ",".join([str(i) for i in self.items]))
+
+
+class Lot(object):
+
+    count = 0
+
+    def __init__(self, index, name, win, price):
+        self.index = index
+        self.name = name
+        self.win = win
+        self.price = price
+
+        self.count = self.__class__.count
+        self.__class__.count += 1
+
+    def __repr__(self):
+        return "<Lot {} win:{} price:{}>".format(self.count, self.win, self.price)
+
+
+def convert_to_lots(lot_list):
+    """
+    Преобразуем исходные данные к список объектов типа Lot
+
+    :param lot_list: список dict-ов
+    :return:
+    """
+
+    items = list()
+    for idx, data in enumerate(lot_list):
+
+        # стоимость всего лота в деньгах (="вес" в задаче о рюкзаке)
+        lot_price = PAPER_NOMINAL * data['price_percent']/100 * data['quantity']
+
+        # выигрыш лота (в деньгах) = купонный доход + сумма погашения
+        # (="ценность\цена" в задаче о рюкзаке)
+        lot_win = (PAPER_NOMINAL + LOT_DAYS * LOT_COUPON_DAYLY) * \
+                  data['quantity']
+
+        items.append(Lot(data['name'], idx, lot_win, lot_price))
+
+    items.sort(key=lambda x: x.win/x.price)
+
+    return items
+
+
+def calculate_optimal_lots(lot_list, days, balance):
+
+    lots = convert_to_lots(lot_list)
+
+    nodes = deque()
+
+    # создаем фиктивный узел дерева чтобы с него начать
+    root_node = Node(0, 0, -1, [])
+    nodes.append(root_node)
+    max_win_node = root_node
+
+    while len(nodes) > 0:
+
+        current_node = nodes.popleft()
+        print('current: {}'.format(current_node))
+        level = current_node.level + 1
+
+        if level + 1 > len(lots):
+            continue
+
+        # вариант 1: что если купить следующий лот по списку
+        new_left = Node(current_node.win + lots[level].win,
+                        current_node.price + lots[level].price,
+                        level,
+                        current_node.items + [lots[level]])
+
+        print('\tleft: {}'.format(new_left))
+        if new_left.price <= balance:
+
+            if max_win_node.win < new_left.win:
+                max_win_node = new_left
+                print('\t\tmax win: {}'.format(max_win_node.win))
+
+            print(
+                '\tleft bound: {}'.format(new_left.upperbound(lots, balance)))
+
+            if new_left.upperbound(lots, balance) > max_win_node.win:
+                nodes.append(new_left)
+
+        # вариант 2: а что если не покупать следующий лот по списку
+        new_right = Node(current_node.win,
+                         current_node.price,
+                         level,
+                         current_node.items)
+
+        print('\tright: {}'.format(new_right))
+        print('\tright bound: {}'.format(new_right.upperbound(lots, balance)))
+
+        if new_right.upperbound(lots, balance) > max_win_node.win:
+            nodes.append(new_right)
+
+
+    return max_win_node.win, max_win_node.items
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Calculate optimal trader strategy')
-    parser.add_argument('-f', '--file', type=str, help="File with source data")
-
+        description='Calculate optimal trader strategy (continuous knapsack)')
+    parser.add_argument('-f', '--file', type=str, help="Data-file")
     args = parser.parse_args()
-    
+
     filename = args.file
 
-
     try:
-        if filename:
-            days, lots, balance = get_data_from_file(filename)
-        else:
-            days, lots, balance = get_data_from_input()
+        days, lots, balance = get_data_from_file(filename)
     except Exception as e:
         exit("Input error: {}".format(e))
 
-    print(lots, days, balance)
-
-
-    total_win, lot_purchased = calculate_optimal_lots(days, lots, balance)
-    # /print()
+    total_win, lot_purchased = calculate_optimal_lots(lots, days, balance)
+    print('Balance: {}'.format(balance))
+    print('Total win: {}'.format(total_win))
+    print('Purchases: ')
+    print(lot_purchased)
 
