@@ -155,7 +155,8 @@ class Lot(object):
 
 def convert_to_lots(lot_list):
     """
-    Преобразуем исходные данные к список объектов типа Lot
+    Преобразуем исходные данные в список объектов типа Lot
+    Список сразу сортируем по убыванию win/price (доход на стоимость)
 
     :param lot_list: список dict-ов
     :return:
@@ -172,9 +173,9 @@ def convert_to_lots(lot_list):
         lot_win = (PAPER_NOMINAL + LOT_DAYS * LOT_COUPON_DAYLY) * \
                   data['quantity']
 
-        items.append(Lot(data['name'], idx, lot_win, lot_price))
+        items.append(Lot(idx, data['name'], lot_win, lot_price))
 
-    items.sort(key=lambda x: x.win/x.price)
+    items.sort(key=lambda x: x.win/x.price, reverse=True)
 
     return items
 
@@ -230,8 +231,7 @@ def calculate_optimal_lots(lot_list, days, balance):
         if new_right.upperbound(lots, balance) > max_win_node.win:
             nodes.append(new_right)
 
-
-    return max_win_node.win, max_win_node.items
+    return max_win_node.win, (lot.index for lot in max_win_node.items)
 
 
 if __name__ == '__main__':
@@ -247,9 +247,8 @@ if __name__ == '__main__':
     except Exception as e:
         exit("Input error: {}".format(e))
 
-    total_win, lot_purchased = calculate_optimal_lots(lots, days, balance)
-    print('Balance: {}'.format(balance))
-    print('Total win: {}'.format(total_win))
-    print('Purchases: ')
-    print(lot_purchased)
+    total_win, lot_indexes = calculate_optimal_lots(lots, days, balance)
 
+    print(total_win)
+    for idx in lot_indexes:
+        print(lots[idx]['raw_line'])
